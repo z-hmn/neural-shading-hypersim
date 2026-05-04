@@ -1,0 +1,14 @@
+awsenv/
+venv/
+__pycache__/
+*.pyc
+
+data/
+cached_data/
+outputs/
+
+*.pt
+*.pth
+*.zip
+.DS_Store
+ml-hypersim/
