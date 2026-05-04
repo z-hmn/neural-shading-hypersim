@@ -13,8 +13,8 @@ from cached_dataset import CachedHypersimDataset
 from model import SmallUNet
 
 
-CACHE_INDEX = "cached_data/normal_cam/cached_index.json"
-OUTPUT_DIR = Path("outputs/aws_normalCam")
+CACHE_INDEX = "cached_data/normal_world/cached_index.json"
+OUTPUT_DIR = Path("outputs/aws_normalWorld")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 BATCH_SIZE = 8
@@ -120,7 +120,7 @@ plt.plot(train_losses, label="Train L1")
 plt.plot(test_losses, label="Test L1")
 plt.xlabel("Epoch")
 plt.ylabel("L1 Loss")
-plt.title("Normal Cam: Training and Test Loss")
+plt.title("Normal World: Training and Test Loss")
 plt.legend()
 plt.tight_layout()
 loss_curve_path = OUTPUT_DIR / "loss_curve.png"
@@ -165,9 +165,8 @@ with torch.no_grad():
         gt_recon = np.clip(reflectance_img * gt_illum, 0, 1)
         pred_recon = np.clip(reflectance_img * pred_illum, 0, 1)
 
-        fig, axs = plt.subplots(3, 3, figsize=(13, 13))
+        fig, axs = plt.subplots(2, 4, figsize=(16, 8))
 
-        # Row 1: inputs
         axs[0, 0].imshow(tensor_to_img(normals_vis))
         axs[0, 0].set_title("Input Normals")
 
@@ -177,37 +176,31 @@ with torch.no_grad():
         axs[0, 2].imshow(reflectance_img)
         axs[0, 2].set_title("Input Reflectance")
 
-        # Row 2: illumination comparison
-        axs[1, 0].imshow(gt_illum)
-        axs[1, 0].set_title("GT Illumination")
+        axs[0, 3].imshow(gt_illum)
+        axs[0, 3].set_title("GT Illumination")
 
-        axs[1, 1].imshow(pred_illum)
-        axs[1, 1].set_title("Predicted Illumination")
+        axs[1, 0].imshow(pred_illum)
+        axs[1, 0].set_title("Predicted Illumination")
 
-        axs[1, 2].imshow(np.abs(pred_illum - gt_illum))
-        axs[1, 2].set_title("Illumination Error")
+        axs[1, 1].imshow(np.abs(pred_illum - gt_illum))
+        axs[1, 1].set_title("Illumination Error")
 
-        # Row 3: reconstructed render comparison
-        axs[2, 0].imshow(gt_recon)
-        axs[2, 0].set_title("GT Reflectance × Illum")
+        axs[1, 2].imshow(gt_recon)
+        axs[1, 2].set_title("GT Reflectance × Illum")
 
-        axs[2, 1].imshow(pred_recon)
-        axs[2, 1].set_title("Pred Reflectance × Illum")
-
-        axs[2, 2].imshow(np.abs(pred_recon - gt_recon))
-        axs[2, 2].set_title("Reconstruction Error")
+        axs[1, 3].imshow(pred_recon)
+        axs[1, 3].set_title("Pred Reflectance × Illum")
 
         for ax in axs.ravel():
-        ax.axis("off")
+            ax.axis("off")
 
-        plt.suptitle(f"Normal Cam Test Example {i}", fontsize=16)
+        plt.suptitle(f"Normal World Test Example {i}")
         plt.tight_layout()
 
         out_path = OUTPUT_DIR / f"prediction_example_{i}.png"
         plt.savefig(out_path, dpi=200)
         plt.close()
 
-        print(f"Saved prediction example: {out_path}") 
-
+        print(f"Saved prediction example: {out_path}")
 
 print("Done.")
