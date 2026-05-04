@@ -147,9 +147,11 @@ with torch.no_grad():
 
         pred_recon = np.clip(reflectance_img * pred_illum, 0, 1)
         gt_recon = np.clip(reflectance_img * gt_illum, 0, 1)
+        recon_error = np.abs(pred_recon - gt_recon)
 
-        fig, axs = plt.subplots(2, 4, figsize=(16, 8))
+        fig, axs = plt.subplots(3, 3, figsize=(14, 14))
 
+        # Row 0: inputs
         axs[0, 0].imshow(img(normals))
         axs[0, 0].set_title("Input Normals")
 
@@ -159,20 +161,25 @@ with torch.no_grad():
         axs[0, 2].imshow(reflectance_img)
         axs[0, 2].set_title("Input Reflectance")
 
-        axs[0, 3].imshow(gt_illum)
-        axs[0, 3].set_title("GT Illumination")
+        # Row 1: illumination
+        axs[1, 0].imshow(gt_illum)
+        axs[1, 0].set_title("GT Illumination")
 
-        axs[1, 0].imshow(pred_illum)
-        axs[1, 0].set_title("Pred Illumination")
+        axs[1, 1].imshow(pred_illum)
+        axs[1, 1].set_title("Predicted Illumination")
 
-        axs[1, 1].imshow(np.abs(pred_illum - gt_illum))
-        axs[1, 1].set_title("Error")
+        axs[1, 2].imshow(np.abs(pred_illum - gt_illum))
+        axs[1, 2].set_title("Illumination Error")
 
-        axs[1, 2].imshow(gt_recon)
-        axs[1, 2].set_title("GT Recon")
+        # Row 2: reconstruction
+        axs[2, 0].imshow(gt_recon)
+        axs[2, 0].set_title("GT Reflectance × Illum")
 
-        axs[1, 3].imshow(pred_recon)
-        axs[1, 3].set_title("Pred Recon")
+        axs[2, 1].imshow(pred_recon)
+        axs[2, 1].set_title("Pred Reflectance × Illum")
+
+        axs[2, 2].imshow(recon_error)
+        axs[2, 2].set_title("Reconstruction Error")
 
         for ax in axs.ravel():
             ax.axis("off")

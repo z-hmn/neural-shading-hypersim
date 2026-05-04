@@ -14,11 +14,11 @@ from model import SmallUNet
 
 
 CACHE_INDEX = "cached_data/normal_world/cached_index.json"
-OUTPUT_DIR = Path("outputs/aws_normalWorld")
+OUTPUT_DIR = Path("outputs/exp1_normalWorld_illumLoss_20epochs")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 BATCH_SIZE = 8
-EPOCHS = 8
+EPOCHS = 14
 LEARNING_RATE = 1e-4
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -62,54 +62,70 @@ model = SmallUNet().to(device)
 loss_fn = nn.L1Loss()
 optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
+
 train_losses = []
 test_losses = []
 
 
+
+
 def evaluate(loader):
-    model.eval()
-    total_loss = 0.0
+   model.eval()
+   total_loss = 0.0
 
-    with torch.no_grad():
-        for x, y, reflectance in loader:
-            x = x.to(device)
-            y = y.to(device)
 
-            pred = model(x)
-            loss = loss_fn(pred, y)
-            total_loss += loss.item()
+   with torch.no_grad():
+       for x, y, reflectance in loader:
+           x = x.to(device)
+           y = y.to(device)
 
-    return total_loss / len(loader)
+
+           pred = model(x)
+           loss = loss_fn(pred, y)
+           total_loss += loss.item()
+
+
+   return total_loss / len(loader)
+
+
 
 
 for epoch in range(EPOCHS):
-    model.train()
-    total_train_loss = 0.0
+   model.train()
+   total_train_loss = 0.0
 
-    for x, y, reflectance in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{EPOCHS}"):
-        x = x.to(device)
-        y = y.to(device)
 
-        pred = model(x)
-        loss = loss_fn(pred, y)
+   for x, y, reflectance in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{EPOCHS}"):
+       x = x.to(device)
+       y = y.to(device)
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
 
-        total_train_loss += loss.item()
+       pred = model(x)
+       loss = loss_fn(pred, y)
 
-    avg_train_loss = total_train_loss / len(train_loader)
-    avg_test_loss = evaluate(test_loader)
 
-    train_losses.append(avg_train_loss)
-    test_losses.append(avg_test_loss)
+       optimizer.zero_grad()
+       loss.backward()
+       optimizer.step()
 
-    print(
-        f"Epoch {epoch + 1}/{EPOCHS} | "
-        f"train L1: {avg_train_loss:.4f} | "
-        f"test L1: {avg_test_loss:.4f}"
-    )
+
+       total_train_loss += loss.item()
+
+
+   avg_train_loss = total_train_loss / len(train_loader)
+   avg_test_loss = evaluate(test_loader)
+
+
+   train_losses.append(avg_train_loss)
+   test_losses.append(avg_test_loss)
+
+
+   print(
+       f"Epoch {epoch + 1}/{EPOCHS} | "
+       f"train L1: {avg_train_loss:.4f} | "
+       f"test L1: {avg_test_loss:.4f}"
+   )
+
 
 checkpoint_path = OUTPUT_DIR / "small_unet_train_eval.pt"
 torch.save(model.state_dict(), checkpoint_path)
@@ -119,8 +135,8 @@ plt.figure(figsize=(8, 5))
 plt.plot(train_losses, label="Train L1")
 plt.plot(test_losses, label="Test L1")
 plt.xlabel("Epoch")
-plt.ylabel("L1 Loss")
-plt.title("Normal World: Training and Test Loss")
+plt.ylabel("Total Loss")
+plt.title("Normal World: Illumination and Reconstruction Loss")
 plt.legend()
 plt.tight_layout()
 loss_curve_path = OUTPUT_DIR / "loss_curve.png"
@@ -164,9 +180,11 @@ with torch.no_grad():
 
         gt_recon = np.clip(reflectance_img * gt_illum, 0, 1)
         pred_recon = np.clip(reflectance_img * pred_illum, 0, 1)
+        recon_error = np.abs(pred_recon - gt_recon)
 
-        fig, axs = plt.subplots(2, 4, figsize=(16, 8))
+        fig, axs = plt.subplots(3, 3, figsize=(14, 14))
 
+        # Row 0: inputs
         axs[0, 0].imshow(tensor_to_img(normals_vis))
         axs[0, 0].set_title("Input Normals")
 
@@ -176,20 +194,25 @@ with torch.no_grad():
         axs[0, 2].imshow(reflectance_img)
         axs[0, 2].set_title("Input Reflectance")
 
-        axs[0, 3].imshow(gt_illum)
-        axs[0, 3].set_title("GT Illumination")
+        # Row 1: illumination
+        axs[1, 0].imshow(gt_illum)
+        axs[1, 0].set_title("GT Illumination")
 
-        axs[1, 0].imshow(pred_illum)
-        axs[1, 0].set_title("Predicted Illumination")
+        axs[1, 1].imshow(pred_illum)
+        axs[1, 1].set_title("Predicted Illumination")
 
-        axs[1, 1].imshow(np.abs(pred_illum - gt_illum))
-        axs[1, 1].set_title("Illumination Error")
+        axs[1, 2].imshow(np.abs(pred_illum - gt_illum))
+        axs[1, 2].set_title("Illumination Error")
 
-        axs[1, 2].imshow(gt_recon)
-        axs[1, 2].set_title("GT Reflectance × Illum")
+        # Row 2: reconstruction
+        axs[2, 0].imshow(gt_recon)
+        axs[2, 0].set_title("GT Reflectance × Illum")
 
-        axs[1, 3].imshow(pred_recon)
-        axs[1, 3].set_title("Pred Reflectance × Illum")
+        axs[2, 1].imshow(pred_recon)
+        axs[2, 1].set_title("Pred Reflectance × Illum")
+
+        axs[2, 2].imshow(recon_error)
+        axs[2, 2].set_title("Reconstruction Error")
 
         for ax in axs.ravel():
             ax.axis("off")

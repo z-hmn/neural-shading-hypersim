@@ -13,12 +13,12 @@ from cached_dataset import CachedHypersimDataset
 from model import SmallUNet
 
 
-CACHE_INDEX = "cached_data/normal_cam/cached_index.json"
-OUTPUT_DIR = Path("outputs/aws_normalCam")
+CACHE_INDEX = "cached_data/normal_world/cached_index.json"
+OUTPUT_DIR = Path("outputs/exp2_normWorld_Recon_Grad")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 BATCH_SIZE = 8
-EPOCHS = 8
+EPOCHS = 20
 LEARNING_RATE = 1e-4
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -62,54 +62,120 @@ model = SmallUNet().to(device)
 loss_fn = nn.L1Loss()
 optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
 
+RECON_WEIGHT = 0.5
+GRAD_WEIGHT = 0.1
+
+
 train_losses = []
 test_losses = []
 
 
+def gradient_loss(pred, target):
+   pred_dx = pred[:, :, :, 1:] - pred[:, :, :, :-1]
+   target_dx = target[:, :, :, 1:] - target[:, :, :, :-1]
+
+   pred_dy = pred[:, :, 1:, :] - pred[:, :, :-1, :]
+   target_dy = target[:, :, 1:, :] - target[:, :, :-1, :]
+
+   loss_x = loss_fn(pred_dx, target_dx)
+   loss_y = loss_fn(pred_dy, target_dy)
+
+   return loss_x + loss_y
+
+
+def compute_loss(pred, y, reflectance):
+   illum_loss = loss_fn(pred, y)
+
+   reflectance = reflectance.to(device)
+   pred_recon = reflectance * pred
+   gt_recon = reflectance * y
+
+   recon_loss = loss_fn(pred_recon, gt_recon)
+   grad_loss = gradient_loss(pred, y)
+
+   total_loss = illum_loss + RECON_WEIGHT * recon_loss + GRAD_WEIGHT * grad_loss
+
+   return total_loss, illum_loss, recon_loss, grad_loss
+
+
+
 def evaluate(loader):
-    model.eval()
-    total_loss = 0.0
+   model.eval()
+   total_loss = 0.0
+   total_illum_loss = 0.0
+   total_recon_loss = 0.0
+   total_grad_loss = 0.0
 
-    with torch.no_grad():
-        for x, y, reflectance in loader:
-            x = x.to(device)
-            y = y.to(device)
+   with torch.no_grad():
+       for x, y, reflectance in loader:
+           x = x.to(device)
+           y = y.to(device)
 
-            pred = model(x)
-            loss = loss_fn(pred, y)
-            total_loss += loss.item()
+           pred = model(x)
 
-    return total_loss / len(loader)
+           loss, illum_loss, recon_loss, grad_loss = compute_loss(pred, y, reflectance)
+
+           total_loss += loss.item()
+           total_illum_loss += illum_loss.item()
+           total_recon_loss += recon_loss.item()
+           total_grad_loss += grad_loss.item()
+
+   return (
+       total_loss / len(loader),
+       total_illum_loss / len(loader),
+       total_recon_loss / len(loader),
+       total_grad_loss / len(loader),
+   )
 
 
 for epoch in range(EPOCHS):
-    model.train()
-    total_train_loss = 0.0
+   model.train()
+   total_train_loss = 0.0
+   total_train_illum_loss = 0.0
+   total_train_recon_loss = 0.0
+   total_train_grad_loss = 0.0
 
-    for x, y, reflectance in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{EPOCHS}"):
-        x = x.to(device)
-        y = y.to(device)
+   for x, y, reflectance in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{EPOCHS}"):
+       x = x.to(device)
+       y = y.to(device)
 
-        pred = model(x)
-        loss = loss_fn(pred, y)
+       pred = model(x)
 
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+       loss, illum_loss, recon_loss, grad_loss = compute_loss(pred, y, reflectance)
 
-        total_train_loss += loss.item()
+       optimizer.zero_grad()
+       loss.backward()
+       optimizer.step()
 
-    avg_train_loss = total_train_loss / len(train_loader)
-    avg_test_loss = evaluate(test_loader)
+       total_train_loss += loss.item()
+       total_train_illum_loss += illum_loss.item()
+       total_train_recon_loss += recon_loss.item()
+       total_train_grad_loss += grad_loss.item()
 
-    train_losses.append(avg_train_loss)
-    test_losses.append(avg_test_loss)
+   avg_train_loss = total_train_loss / len(train_loader)
+   avg_train_illum_loss = total_train_illum_loss / len(train_loader)
+   avg_train_recon_loss = total_train_recon_loss / len(train_loader)
+   avg_train_grad_loss = total_train_grad_loss / len(train_loader)
 
-    print(
-        f"Epoch {epoch + 1}/{EPOCHS} | "
-        f"train L1: {avg_train_loss:.4f} | "
-        f"test L1: {avg_test_loss:.4f}"
-    )
+   avg_test_loss, avg_test_illum_loss, avg_test_recon_loss, avg_test_grad_loss = evaluate(test_loader)
+
+   train_losses.append(avg_train_loss)
+   test_losses.append(avg_test_loss)
+
+   print(
+       f"Epoch {epoch + 1}/{EPOCHS} | "
+       f"train total: {avg_train_loss:.4f} | "
+       f"train illum: {avg_train_illum_loss:.4f} | "
+       f"train recon: {avg_train_recon_loss:.4f} | "
+       f"train grad: {avg_train_grad_loss:.4f} | "
+       f"test total: {avg_test_loss:.4f} | "
+       f"test illum: {avg_test_illum_loss:.4f} | "
+       f"test recon: {avg_test_recon_loss:.4f} | "
+       f"test grad: {avg_test_grad_loss:.4f}"
+   )
+
+
+
 
 checkpoint_path = OUTPUT_DIR / "small_unet_train_eval.pt"
 torch.save(model.state_dict(), checkpoint_path)
@@ -119,8 +185,8 @@ plt.figure(figsize=(8, 5))
 plt.plot(train_losses, label="Train L1")
 plt.plot(test_losses, label="Test L1")
 plt.xlabel("Epoch")
-plt.ylabel("L1 Loss")
-plt.title("Normal Cam: Training and Test Loss")
+plt.ylabel("Total Loss")
+plt.title("Normal World: Illumination, Reconstruction, and Gradient Loss")
 plt.legend()
 plt.tight_layout()
 loss_curve_path = OUTPUT_DIR / "loss_curve.png"
@@ -201,14 +267,13 @@ with torch.no_grad():
         for ax in axs.ravel():
             ax.axis("off")
 
-        plt.suptitle(f"Normal Cam Test Example {i}", fontsize=16)
+        plt.suptitle(f"Normal World Test Example {i}")
         plt.tight_layout()
 
         out_path = OUTPUT_DIR / f"prediction_example_{i}.png"
         plt.savefig(out_path, dpi=200)
         plt.close()
 
-        print(f"Saved prediction example: {out_path}") 
-
+        print(f"Saved prediction example: {out_path}")
 
 print("Done.")

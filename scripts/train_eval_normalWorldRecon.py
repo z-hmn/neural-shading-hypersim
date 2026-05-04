@@ -7,38 +7,27 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, Subset
+from tqdm import tqdm
 
-from datasets import HypersimIlluminationDataset, load_hdf5, tonemap, resize_array
+from cached_dataset import CachedHypersimDataset
 from model import SmallUNet
 
 
-INDEX_PATH = "samples_ai_001_001.json"
-OUTPUT_DIR = Path("outputs/train_eval")
+CACHE_INDEX = "cached_data/normal_world/cached_index.json"
+OUTPUT_DIR = Path("outputs/exp1_normalWorld_ReconLoss_20epochs")
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-IMAGE_SIZE = (256, 256)
-BATCH_SIZE = 2
-EPOCHS = 8
+BATCH_SIZE = 8
+EPOCHS = 20
 LEARNING_RATE = 1e-4
-MAX_SAMPLES = None  # use all 99 samples
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 print("Using device:", device)
 
-
-# ----------------------------
-# 1. Load dataset
-# ----------------------------
-
-dataset = HypersimIlluminationDataset(
-    INDEX_PATH,
-    image_size=IMAGE_SIZE,
-    max_samples=MAX_SAMPLES,
-)
+dataset = CachedHypersimDataset(CACHE_INDEX)
 
 n = len(dataset)
 indices = list(range(n))
-
 random.seed(42)
 random.shuffle(indices)
 
@@ -49,174 +38,171 @@ test_indices = indices[train_size:]
 train_set = Subset(dataset, train_indices)
 test_set = Subset(dataset, test_indices)
 
-train_loader = DataLoader(train_set, batch_size=BATCH_SIZE, shuffle=True)
-test_loader = DataLoader(test_set, batch_size=1, shuffle=False)
+train_loader = DataLoader(
+    train_set,
+    batch_size=BATCH_SIZE,
+    shuffle=True,
+    num_workers=4,
+    pin_memory=True,
+)
+
+test_loader = DataLoader(
+    test_set,
+    batch_size=1,
+    shuffle=False,
+    num_workers=4,
+    pin_memory=True,
+)
 
 print(f"Total samples: {n}")
 print(f"Train samples: {len(train_set)}")
 print(f"Test samples: {len(test_set)}")
 
-
-# ----------------------------
-# 2. Create model/loss/optimizer
-# ----------------------------
-
 model = SmallUNet().to(device)
 loss_fn = nn.L1Loss()
 optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+
+RECON_WEIGHT = 0.5
 
 train_losses = []
 test_losses = []
 
 
-# ----------------------------
-# 3. Evaluation helper
-# ----------------------------
+def compute_loss(pred, y, reflectance):
+    illum_loss = loss_fn(pred, y)
+
+    reflectance = reflectance.to(device)
+    pred_recon = reflectance * pred
+    gt_recon = reflectance * y
+
+    recon_loss = loss_fn(pred_recon, gt_recon)
+
+    total_loss = illum_loss + RECON_WEIGHT * recon_loss
+
+    return total_loss, illum_loss, recon_loss
+
 
 def evaluate(loader):
     model.eval()
     total_loss = 0.0
+    total_illum_loss = 0.0
+    total_recon_loss = 0.0
 
     with torch.no_grad():
-        for x, y in loader:
+        for x, y, reflectance in loader:
             x = x.to(device)
             y = y.to(device)
 
             pred = model(x)
-            loss = loss_fn(pred, y)
+
+            loss, illum_loss, recon_loss = compute_loss(pred, y, reflectance)
+
             total_loss += loss.item()
+            total_illum_loss += illum_loss.item()
+            total_recon_loss += recon_loss.item()
 
-    return total_loss / len(loader)
+    return (
+        total_loss / len(loader),
+        total_illum_loss / len(loader),
+        total_recon_loss / len(loader),
+    )
 
-
-# ----------------------------
-# 4. Training loop
-# ----------------------------
 
 for epoch in range(EPOCHS):
     model.train()
     total_train_loss = 0.0
+    total_train_illum_loss = 0.0
+    total_train_recon_loss = 0.0
 
-    for x, y in train_loader:
+    for x, y, reflectance in tqdm(train_loader, desc=f"Epoch {epoch + 1}/{EPOCHS}"):
         x = x.to(device)
         y = y.to(device)
 
         pred = model(x)
-        loss = loss_fn(pred, y)
+
+        loss, illum_loss, recon_loss = compute_loss(pred, y, reflectance)
 
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
 
         total_train_loss += loss.item()
+        total_train_illum_loss += illum_loss.item()
+        total_train_recon_loss += recon_loss.item()
 
     avg_train_loss = total_train_loss / len(train_loader)
-    avg_test_loss = evaluate(test_loader)
+    avg_train_illum_loss = total_train_illum_loss / len(train_loader)
+    avg_train_recon_loss = total_train_recon_loss / len(train_loader)
+
+    avg_test_loss, avg_test_illum_loss, avg_test_recon_loss = evaluate(test_loader)
 
     train_losses.append(avg_train_loss)
     test_losses.append(avg_test_loss)
 
     print(
         f"Epoch {epoch + 1}/{EPOCHS} | "
-        f"train L1: {avg_train_loss:.4f} | "
-        f"test L1: {avg_test_loss:.4f}"
+        f"train total: {avg_train_loss:.4f} | "
+        f"train illum: {avg_train_illum_loss:.4f} | "
+        f"train recon: {avg_train_recon_loss:.4f} | "
+        f"test total: {avg_test_loss:.4f} | "
+        f"test illum: {avg_test_illum_loss:.4f} | "
+        f"test recon: {avg_test_recon_loss:.4f}"
     )
 
-
-# ----------------------------
-# 5. Save checkpoint
-# ----------------------------
 
 checkpoint_path = OUTPUT_DIR / "small_unet_train_eval.pt"
 torch.save(model.state_dict(), checkpoint_path)
 print(f"Saved checkpoint: {checkpoint_path}")
 
-
-# ----------------------------
-# 6. Save loss curve
-# ----------------------------
-
 plt.figure(figsize=(8, 5))
 plt.plot(train_losses, label="Train L1")
 plt.plot(test_losses, label="Test L1")
 plt.xlabel("Epoch")
-plt.ylabel("L1 Loss")
-plt.title("Training and Test Loss")
+plt.ylabel("Total Loss")
+plt.title("Normal World: Illumination and Reconstruction Loss")
 plt.legend()
 plt.tight_layout()
 loss_curve_path = OUTPUT_DIR / "loss_curve.png"
 plt.savefig(loss_curve_path, dpi=200)
 plt.close()
-
 print(f"Saved loss curve: {loss_curve_path}")
 
 
-# ----------------------------
-# 7. Helpers for visualization
-# ----------------------------
-
 def tensor_to_img(t):
-    """
-    Convert tensor from [C, H, W] to numpy image [H, W, C].
-    """
     return t.detach().cpu().permute(1, 2, 0).numpy()
 
 
 def tensor_to_gray(t):
-    """
-    Convert tensor from [H, W] or [1, H, W] to numpy grayscale image.
-    """
     t = t.detach().cpu()
     if t.ndim == 3:
         t = t[0]
     return t.numpy()
 
 
-def load_reflectance_from_sample(sample):
-    reflectance = load_hdf5(sample["reflectance"])
-    reflectance = resize_array(reflectance, IMAGE_SIZE)
-    reflectance = np.clip(np.nan_to_num(reflectance), 0, 1)
-    return reflectance.astype(np.float32)
-
-
-# ----------------------------
-# 8. Save qualitative predictions
-# ----------------------------
-
 model.eval()
-
-with open(INDEX_PATH, "r") as f:
-    all_samples = json.load(f)
-
 num_examples_to_save = min(5, len(test_indices))
 
 with torch.no_grad():
     for i in range(num_examples_to_save):
         dataset_idx = test_indices[i]
-        sample = all_samples[dataset_idx]
 
-        x, y = dataset[dataset_idx]
+        x, y, reflectance = dataset[dataset_idx]
         x_batch = x.unsqueeze(0).to(device)
 
         pred = model(x_batch)[0].cpu()
 
-        # Pull individual components from x
         normals = x[0:3]
         depth = x[3]
-        reflectance_tensor = x[4:7]
 
         normals_vis = torch.clamp((normals + 1) / 2, 0, 1)
         depth_vis = depth
-        reflectance = tensor_to_img(reflectance_tensor)
 
+        reflectance_img = tensor_to_img(reflectance)
         gt_illum = tensor_to_img(y)
         pred_illum = tensor_to_img(pred)
 
-        # Reconstruct color using reflectance × illumination.
-        # These are both tone-mapped-ish display-space images, so this is not physically exact,
-        # but it is useful as a qualitative visualization.
-        gt_recon = np.clip(reflectance * gt_illum, 0, 1)
-        pred_recon = np.clip(reflectance * pred_illum, 0, 1)
+        gt_recon = np.clip(reflectance_img * gt_illum, 0, 1)
+        pred_recon = np.clip(reflectance_img * pred_illum, 0, 1)
         recon_error = np.abs(pred_recon - gt_recon)
 
         fig, axs = plt.subplots(3, 3, figsize=(14, 14))
@@ -228,7 +214,7 @@ with torch.no_grad():
         axs[0, 1].imshow(tensor_to_gray(depth_vis), cmap="gray")
         axs[0, 1].set_title("Input Depth")
 
-        axs[0, 2].imshow(reflectance)
+        axs[0, 2].imshow(reflectance_img)
         axs[0, 2].set_title("Input Reflectance")
 
         # Row 1: illumination
@@ -254,7 +240,7 @@ with torch.no_grad():
         for ax in axs.ravel():
             ax.axis("off")
 
-        plt.suptitle(f"Test Sample: {sample['frame']}")
+        plt.suptitle(f"Normal World Test Example {i}")
         plt.tight_layout()
 
         out_path = OUTPUT_DIR / f"prediction_example_{i}.png"
@@ -262,6 +248,5 @@ with torch.no_grad():
         plt.close()
 
         print(f"Saved prediction example: {out_path}")
-
 
 print("Done.")
